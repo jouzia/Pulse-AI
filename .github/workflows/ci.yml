@@ -1,0 +1,101 @@
+name: CI
+
+# This is the first environment in this project's history with real
+# network access and real Postgres/Redis available -- every phase of
+# development happened in a sandboxed environment with neither (see
+# README.md's Runtime Verification section). Until this workflow
+# actually runs, "tests pass" for this project means "passed here for
+# the first time," not "confirmed working."
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: pulse
+          POSTGRES_PASSWORD: pulse
+          POSTGRES_DB: pulse_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U pulse"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql+asyncpg://pulse:pulse@localhost:5432/pulse_test
+      REDIS_URL: redis://localhost:6379/0
+      API_KEY: ci-test-key
+      CELERY_BROKER_URL: redis://localhost:6379/1
+      CELERY_RESULT_BACKEND: redis://localhost:6379/2
+
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Compile check
+        run: python -m compileall .
+
+      - name: Run migrations
+        run: alembic upgrade head
+
+      - name: Verify migration reversibility
+        run: |
+          alembic downgrade -1
+          alembic upgrade head
+
+      - name: Run tests
+        run: pytest -v
+
+  frontend:
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build
+        env:
+          PULSE_API_URL: http://localhost:8000
+          PULSE_API_KEY: ci-test-key
+        run: npm run build
+
+      - name: Run tests
+        run: npm run test

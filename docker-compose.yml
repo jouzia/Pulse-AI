@@ -1,0 +1,98 @@
+services:
+  # Note on non-root Dockerfile users + these bind mounts: both
+  # Dockerfiles (Phase 6 audit) now chown /app to a non-root user at
+  # build time, but the bind mounts below (./backend:/app,
+  # ./frontend:/app) replace that directory's contents -- and its
+  # ownership -- with the host filesystem's at container start. This is
+  # a known, accepted dev-only wrinkle: it's what makes live code
+  # reload work, and neither uvicorn nor `npm run dev` needs to write
+  # into /app during normal operation, so it doesn't break anything
+  # here. A real deployment wouldn't bind-mount source code at all, so
+  # the non-root user's chown would apply as intended there.
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: pulse
+      POSTGRES_PASSWORD: pulse
+      POSTGRES_DB: pulse
+    ports:
+      - "5432:5432"
+    volumes:
+      - pulse_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pulse"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build: ./backend
+    env_file: .env
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+
+  worker:
+    build: ./backend
+    env_file: .env
+    command: celery -A app.workers.celery_app worker --loglevel=info -Q notifications.email,notifications.sms,notifications.push,notifications.default
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+
+  beat:
+    build: ./backend
+    env_file: .env
+    command: celery -A app.workers.celery_app beat --loglevel=info
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./backend:/app
+
+  frontend:
+    build: ./frontend
+    environment:
+      # PULSE_API_URL points at the backend's in-network hostname
+      # (always correct inside the compose network, regardless of what
+      # host the browser reaches this dashboard on). PULSE_API_KEY is
+      # pulled from the root .env's API_KEY via compose's own ${...}
+      # substitution -- deliberately NOT `env_file: .env`, which would
+      # also hand the frontend container DATABASE_URL, CELERY_*, etc.
+      # that it has no business holding. See
+      # frontend/app/api/proxy/[...path]/route.ts for why this key must
+      # stay server-side.
+      PULSE_API_URL: http://api:8000
+      PULSE_API_KEY: ${API_KEY}
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+
+volumes:
+  pulse_postgres_data:
