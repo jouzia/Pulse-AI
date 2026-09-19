@@ -1,4 +1,4 @@
-# Pulse
+# Pulse AI
 
 ### Event-Driven Notification Infrastructure
 
