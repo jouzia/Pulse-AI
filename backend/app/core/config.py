@@ -1,10 +1,17 @@
 from functools import lru_cache
+from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+
+
 class Settings(BaseSettings):
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=PROJECT_ROOT / ".env",
+        extra="ignore",
+    )
 
     # App
     environment: str = "development"
@@ -12,15 +19,15 @@ class Settings(BaseSettings):
 
     # Postgres
     database_url: str = (
-        "postgresql+asyncpg://pulse:pulse@postgres:5432/pulse"
+        "postgresql+asyncpg://pulse:pulse@localhost:5432/pulse"
     )
 
     # Redis
-    redis_url: str = "redis://redis:6379/0"
-    celery_broker_url: str = "redis://redis:6379/1"
-    celery_result_backend: str = "redis://redis:6379/2"
+    redis_url: str = "redis://localhost:6379/0"
+    celery_broker_url: str = "redis://localhost:6379/1"
+    celery_result_backend: str = "redis://localhost:6379/2"
 
-    # Rate limits (per-minute, enforced via Redis token bucket in Phase 4)
+    # Rate limits
     rate_limit_email_per_minute: int = 100
     rate_limit_sms_per_minute: int = 30
     rate_limit_push_per_minute: int = 200

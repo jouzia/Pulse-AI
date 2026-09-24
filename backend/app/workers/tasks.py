@@ -1,3 +1,4 @@
+
 """
 The worker's job-processing task.
 
@@ -100,8 +101,12 @@ async def _run_and_dispose(job_id: uuid.UUID, channel: NotificationChannel) -> N
 RATE_LIMIT_RETRY_DELAY_SECONDS = 2.0
 
 
-async def _process_notification_job(job_id: uuid.UUID, channel: NotificationChannel) -> None:
+async def _process_notification_job(
+    job_id: uuid.UUID,
+    channel: NotificationChannel,
+) -> None:
     limiter = get_rate_limiter()
+
     if not await limiter.allow(channel):
         # Rate limiting is not a provider failure: it must not touch
         # attempt_count, RetryPolicy, or create a delivery record. The
@@ -110,32 +115,55 @@ async def _process_notification_job(job_id: uuid.UUID, channel: NotificationChan
         # NOT the RetryPolicy backoff, and deliberately not immediate
         # (which would hot-loop against an exhausted rate limit).
         metrics.rate_limit_denied_total.labels(channel=channel.value).inc()
-        logger.info("job_rate_limited", job_id=str(job_id), channel=channel.value)
+        logger.info(
+            "job_rate_limited",
+            job_id=str(job_id),
+            channel=channel.value,
+        )
+
         try:
             enqueue_notification_job(
-                job_id, channel, countdown=RATE_LIMIT_RETRY_DELAY_SECONDS
+                job_id,
+                channel,
+                countdown=RATE_LIMIT_RETRY_DELAY_SECONDS,
             )
         except Exception:  # noqa: BLE001 -- broker hiccup must not crash the worker
             logger.error(
-                "rate_limit_reenqueue_failed", job_id=str(job_id), channel=channel.value
+                "rate_limit_reenqueue_failed",
+                job_id=str(job_id),
+                channel=channel.value,
             )
+
         return
 
     claim = await _claim_job(job_id)
+
     if claim is None:
-        logger.info("job_claim_skipped", job_id=str(job_id))
+        logger.info(
+            "job_claim_skipped",
+            job_id=str(job_id),
+        )
         return
 
     recipient, attempt_number = claim
-    metrics.notifications_processed_total.labels(channel=channel.value).inc()
+
+    metrics.notifications_processed_total.labels(
+        channel=channel.value
+    ).inc()
+
     provider = get_provider(channel)
 
     start = datetime.now(timezone.utc)
+
     error_message: str | None
     provider_message_id: str | None
+
     try:
-        result = provider.send(recipient=recipient, job_id=str(job_id))
-    except Exception as exc:  # noqa: BLE001 -- provider boundary: any failure must be recorded, never swallowed
+        result = provider.send(
+            recipient=recipient,
+            job_id=str(job_id),
+        )
+    except Exception as exc:  # noqa: BLE001 -- provider boundary
         success = False
         provider_message_id = None
         error_message = f"provider raised: {exc}"
@@ -143,10 +171,14 @@ async def _process_notification_job(job_id: uuid.UUID, channel: NotificationChan
         success = result.success
         provider_message_id = result.provider_message_id
         error_message = result.error_message
-    duration_seconds = (datetime.now(timezone.utc) - start).total_seconds()
+
+    duration_seconds = (
+        datetime.now(timezone.utc) - start
+    ).total_seconds()
 
     metrics.notification_processing_duration_seconds.labels(
-        channel=channel.value, provider=provider.name
+        channel=channel.value,
+        provider=provider.name,
     ).observe(duration_seconds)
 
     logger.info(
@@ -170,32 +202,53 @@ async def _process_notification_job(job_id: uuid.UUID, channel: NotificationChan
     )
 
 
-async def _claim_job(job_id: uuid.UUID) -> tuple[str, int] | None:
+async def _claim_job(
+    job_id: uuid.UUID,
+) -> tuple[str, int] | None:
     async with AsyncSessionLocal() as session:
         async with session.begin():
             result = await session.execute(
                 select(NotificationJob)
                 .where(NotificationJob.id == job_id)
-                .where(NotificationJob.status.in_([JobStatus.QUEUED, JobStatus.RETRYING]))
+                .where(
+                    NotificationJob.status.in_(
+                        [
+                            JobStatus.QUEUED,
+                            JobStatus.RETRYING,
+                        ]
+                    )
+                )
                 .with_for_update(skip_locked=True)
             )
+
             job = result.scalar_one_or_none()
+
             if job is None:
                 return None
 
             current_status = job.status
+
             if current_status == JobStatus.RETRYING:
-                assert_job_transition(current_status, JobStatus.QUEUED)
+                assert_job_transition(
+                    current_status,
+                    JobStatus.QUEUED,
+                )
                 job.status = JobStatus.QUEUED
                 current_status = JobStatus.QUEUED
 
-            assert_job_transition(current_status, JobStatus.PROCESSING)
+            assert_job_transition(
+                current_status,
+                JobStatus.PROCESSING,
+            )
             job.status = JobStatus.PROCESSING
 
             now = datetime.now(timezone.utc)
+
             job.attempt_count += 1
             job.claimed_at = now
-            job.lease_expires_at = now + timedelta(seconds=LEASE_DURATION_SECONDS)
+            job.lease_expires_at = (
+                now + timedelta(seconds=LEASE_DURATION_SECONDS)
+            )
 
             recipient = job.recipient
             attempt_number = job.attempt_count
@@ -231,7 +284,10 @@ async def _record_outcome(
                     .one()
                 )
             except NoResultFound:
-                logger.warning("job_outcome_skipped_missing", job_id=str(job_id))
+                logger.warning(
+                    "job_outcome_skipped_missing",
+                    job_id=str(job_id),
+                )
                 return
 
             if job.status != JobStatus.PROCESSING:
@@ -246,71 +302,124 @@ async def _record_outcome(
                 return
 
             now = datetime.now(timezone.utc)
+
             session.add(
                 NotificationDelivery(
                     job_id=job.id,
                     provider=provider_name,
                     provider_message_id=provider_message_id,
-                    status=DeliveryStatus.DELIVERED if success else DeliveryStatus.FAILED,
+                    status=(
+                        DeliveryStatus.DELIVERED
+                        if success
+                        else DeliveryStatus.FAILED
+                    ),
                     delivered_at=now if success else None,
                     error_message=error_message,
                 )
             )
 
             if success:
-                assert_job_transition(JobStatus.PROCESSING, JobStatus.DELIVERED)
+                assert_job_transition(
+                    JobStatus.PROCESSING,
+                    JobStatus.DELIVERED,
+                )
                 job.status = JobStatus.DELIVERED
                 job.processed_at = now
                 job.last_error = None
+
                 metrics.notifications_delivered_total.labels(
-                    channel=channel.value, provider=provider_name
+                    channel=channel.value,
+                    provider=provider_name,
                 ).inc()
+
                 metrics.notification_delivery_duration_seconds.labels(
                     channel=channel.value
-                ).observe((now - job.created_at).total_seconds())
+                ).observe(
+                    (now - job.created_at).total_seconds()
+                )
+
             else:
-                assert_job_transition(JobStatus.PROCESSING, JobStatus.FAILED)
+                assert_job_transition(
+                    JobStatus.PROCESSING,
+                    JobStatus.FAILED,
+                )
                 job.status = JobStatus.FAILED
                 job.last_error = error_message
+
                 metrics.notifications_failed_total.labels(
-                    channel=channel.value, provider=provider_name
+                    channel=channel.value,
+                    provider=provider_name,
                 ).inc()
 
                 policy = get_retry_policy(channel.value)
-                if policy.is_exhausted(job.attempt_count):
-                    assert_job_transition(JobStatus.FAILED, JobStatus.DEAD_LETTERED)
+
+                # max_attempts is persisted on the individual job and is
+                # therefore the authoritative retry limit for that job.
+                # The channel policy remains responsible for calculating
+                # retry backoff.
+                if job.attempt_count >= job.max_attempts:
+                    assert_job_transition(
+                        JobStatus.FAILED,
+                        JobStatus.DEAD_LETTERED,
+                    )
                     job.status = JobStatus.DEAD_LETTERED
+
                     metrics.notifications_dead_lettered_total.labels(
                         channel=channel.value
                     ).inc()
+
                     session.add(
                         DeadLetterJob(
                             original_job_id=job.id,
-                            reason=error_message or "Unknown provider failure",
+                            reason=(
+                                error_message
+                                or "Unknown provider failure"
+                            ),
                             payload={
                                 "channel": channel.value,
                                 "recipient": job.recipient,
                             },
                         )
                     )
+
                 else:
-                    assert_job_transition(JobStatus.FAILED, JobStatus.RETRYING)
+                    assert_job_transition(
+                        JobStatus.FAILED,
+                        JobStatus.RETRYING,
+                    )
                     job.status = JobStatus.RETRYING
-                    metrics.notification_retries_total.labels(channel=channel.value).inc()
-                    retry_delay = policy.delay_for_attempt(job.attempt_count)
-                    job.scheduled_at = now + timedelta(seconds=retry_delay)
+
+                    metrics.notification_retries_total.labels(
+                        channel=channel.value
+                    ).inc()
+
+                    retry_delay = policy.delay_for_attempt(
+                        job.attempt_count
+                    )
+
+                    job.scheduled_at = (
+                        now + timedelta(seconds=retry_delay)
+                    )
 
             job.claimed_at = None
             job.lease_expires_at = None
+
             final_status = job.status
             event_id = job.event_id
 
     if event_id is not None:
         await refresh_event_status(event_id)
 
-    if final_status == JobStatus.RETRYING and retry_delay is not None:
+    if (
+        final_status == JobStatus.RETRYING
+        and retry_delay is not None
+    ):
         try:
-            enqueue_notification_job(job_id, channel, countdown=retry_delay)
+            enqueue_notification_job(
+                job_id,
+                channel,
+                countdown=retry_delay,
+            )
         except Exception:  # noqa: BLE001 -- broker hiccup must not crash the worker
             logger.error(
                 "retry_enqueue_failed",

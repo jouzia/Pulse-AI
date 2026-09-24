@@ -35,7 +35,7 @@ from app.core.rate_limiter import get_rate_limiter  # noqa: E402
 from app.db.base import Base  # noqa: E402
 from app.db.session import AsyncSessionLocal, engine, get_db  # noqa: E402
 from app.main import app  # noqa: E402
-import app.models  # noqa: E402,F401 -- registers all tables on Base.metadata
+import app.models as _models  # noqa: E402,F401 -- registers all tables on Base.metadata
 
 get_settings.cache_clear()
 settings = get_settings()
@@ -106,7 +106,7 @@ async def db_session():
 
 @pytest_asyncio.fixture
 async def client():
-    transport = ASGITransport(app=app)
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         yield ac
 

@@ -83,19 +83,30 @@ async def create_event(db: AsyncSession, payload: EventCreateRequest) -> EventRe
         await db.flush()  # surfaces (event_id, channel) UNIQUE violation
 
         await db.commit()
+
     except IntegrityError as exc:
         await db.rollback()
-        constraint = getattr(getattr(exc, "orig", None), "constraint_name", None)
-        if constraint == "uq_job_event_channel":
+
+        orig = getattr(exc, "orig", None)
+        constraint = getattr(orig, "constraint_name", None)
+
+        # asyncpg does not consistently expose constraint_name through
+        # SQLAlchemy's adapted IntegrityError. Fall back to the PostgreSQL
+        # error text, which contains the authoritative constraint name.
+        if (
+            constraint == "uq_job_event_channel"
+            or "uq_job_event_channel" in str(orig)
+            or "uq_job_event_channel" in str(exc)
+        ):
             raise JobAlreadyExistsError(
                 "A notification job for this event and channel already exists."
             ) from exc
+
         raise EventAlreadyExistsError(
             f"An event with event_id '{payload.event_id}' already exists."
         ) from exc
 
     metrics.events_received_total.labels(event_type=payload.event_type).inc()
-
     await db.refresh(event)
     for job in jobs:
         await db.refresh(job)
