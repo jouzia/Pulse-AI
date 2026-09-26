@@ -1,5 +1,4 @@
 # Pulse AI
-
 ### Event-Driven Notification Infrastructure
 
 Pulse is an event-driven notification infrastructure service built with
