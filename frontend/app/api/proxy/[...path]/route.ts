@@ -29,9 +29,10 @@ const API_KEY = process.env.PULSE_API_KEY ?? "";
 
 async function forward(
   req: NextRequest,
-  { params }: { params: { path: string[] } }
+  context: { params: Promise<{ path: string[] }> }
 ): Promise<NextResponse> {
-  const path = params.path.join("/");
+  const { path: pathSegments } = await context.params;
+  const path = pathSegments.join("/");
   const search = req.nextUrl.search;
   const url = `${BACKEND_URL}/api/v1/${path}${search}`;
 
